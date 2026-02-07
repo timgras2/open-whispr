@@ -61,7 +61,7 @@ import com.openwhispr.android.ui.theme.RecordingRed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private enum class RecState { IDLE, RECORDING, TRANSCRIBING }
+private enum class RecState { IDLE, RECORDING, TRANSCRIBING, REASONING }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,7 +72,9 @@ fun RecordingScreen(onNavigateToSettings: () -> Unit) {
 
     val settingsRepo = remember { SettingsRepository(context) }
     val apiKey by settingsRepo.groqApiKey.collectAsState(initial = "")
-    val whisperModel by settingsRepo.whisperModel.collectAsState(initial = SettingsRepository.DEFAULT_MODEL)
+    val whisperModel by settingsRepo.whisperModel.collectAsState(initial = SettingsRepository.DEFAULT_WHISPER_MODEL)
+    val reasoningEnabled by settingsRepo.reasoningEnabled.collectAsState(initial = true)
+    val reasoningModel by settingsRepo.reasoningModel.collectAsState(initial = SettingsRepository.DEFAULT_REASONING_MODEL)
 
     var state by remember { mutableStateOf(RecState.IDLE) }
     var transcription by remember { mutableStateOf("") }
@@ -153,20 +155,48 @@ fun RecordingScreen(onNavigateToSettings: () -> Unit) {
 
         state = RecState.TRANSCRIBING
         scope.launch {
-            GroqApiClient(apiKey).transcribe(audioFile, whisperModel)
-                .onSuccess { text ->
-                    transcription = text
-                    clipboardManager.setText(AnnotatedString(text))
-                    state = RecState.IDLE
-                    errorMessage = null
-                    snackbarHostState.showSnackbar("Copied to clipboard")
-                    audioFile.delete()
-                }
+            val client = GroqApiClient(apiKey)
+
+            // Step 1: Transcribe audio → raw text
+            val transcribeResult = client.transcribe(audioFile, whisperModel)
+            audioFile.delete()
+
+            transcribeResult
                 .onFailure { e ->
                     state = RecState.IDLE
                     errorMessage = e.message ?: "Transcription failed"
-                    audioFile.delete()
+                    return@launch
                 }
+
+            val rawText = transcribeResult.getOrThrow()
+
+            // Step 2: Reasoning — clean up grammar/punctuation via LLM
+            if (reasoningEnabled) {
+                state = RecState.REASONING
+                client.reasonText(rawText, reasoningModel)
+                    .onSuccess { cleaned ->
+                        transcription = cleaned
+                        clipboardManager.setText(AnnotatedString(cleaned))
+                        state = RecState.IDLE
+                        errorMessage = null
+                        snackbarHostState.showSnackbar("Copied to clipboard")
+                    }
+                    .onFailure { e ->
+                        // Reasoning failed — fall back to raw transcription
+                        transcription = rawText
+                        clipboardManager.setText(AnnotatedString(rawText))
+                        state = RecState.IDLE
+                        errorMessage = "Reasoning failed, raw text copied: ${e.message}"
+                        snackbarHostState.showSnackbar("Copied raw text (reasoning failed)")
+                    }
+            } else {
+                // No reasoning — output raw transcription
+                transcription = rawText
+                clipboardManager.setText(AnnotatedString(rawText))
+                state = RecState.IDLE
+                errorMessage = null
+                snackbarHostState.showSnackbar("Copied to clipboard")
+            }
         }
     }
 
@@ -193,7 +223,7 @@ fun RecordingScreen(onNavigateToSettings: () -> Unit) {
         ) {
             // Record button
             when (state) {
-                RecState.TRANSCRIBING -> {
+                RecState.TRANSCRIBING, RecState.REASONING -> {
                     CircularProgressIndicator(
                         modifier = Modifier.size(120.dp),
                         strokeWidth = 6.dp,
@@ -221,6 +251,7 @@ fun RecordingScreen(onNavigateToSettings: () -> Unit) {
                     RecState.IDLE -> if (transcription.isNotEmpty()) "Tap to record again" else "Tap to record"
                     RecState.RECORDING -> formatDuration(recordingSeconds)
                     RecState.TRANSCRIBING -> "Transcribing..."
+                    RecState.REASONING -> "Cleaning up text..."
                 },
                 style = MaterialTheme.typography.titleMedium,
                 color = if (state == RecState.RECORDING) RecordingRed
@@ -239,7 +270,7 @@ fun RecordingScreen(onNavigateToSettings: () -> Unit) {
             }
 
             // Last transcription
-            if (transcription.isNotEmpty() && state != RecState.TRANSCRIBING) {
+            if (transcription.isNotEmpty() && state == RecState.IDLE) {
                 Spacer(Modifier.height(32.dp))
                 Text(
                     text = transcription,
