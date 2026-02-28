@@ -1,16 +1,25 @@
-import { useCallback } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
+import { useSettingsStore, initializeSettings } from "../stores/settingsStore";
+import logger from "../utils/logger";
 import { useLocalStorage } from "./useLocalStorage";
-import { getModelProvider } from "../utils/languages";
-import { API_ENDPOINTS } from "../config/constants";
+import type { LocalTranscriptionProvider } from "../types/electron";
 
 export interface TranscriptionSettings {
+  uiLanguage: string;
   useLocalWhisper: boolean;
   whisperModel: string;
+  localTranscriptionProvider: LocalTranscriptionProvider;
+  parakeetModel: string;
   allowOpenAIFallback: boolean;
   allowLocalFallback: boolean;
   fallbackWhisperModel: string;
   preferredLanguage: string;
+  cloudTranscriptionProvider: string;
+  cloudTranscriptionModel: string;
   cloudTranscriptionBaseUrl?: string;
+  cloudTranscriptionMode: string;
+  customDictionary: string[];
+  assemblyAiStreaming: boolean;
 }
 
 export interface ReasoningSettings {
@@ -18,244 +27,223 @@ export interface ReasoningSettings {
   reasoningModel: string;
   reasoningProvider: string;
   cloudReasoningBaseUrl?: string;
+  cloudReasoningMode: string;
 }
 
 export interface HotkeySettings {
   dictationKey: string;
+  activationMode: "tap" | "push";
+}
+
+export interface MicrophoneSettings {
+  preferBuiltInMic: boolean;
+  selectedMicDeviceId: string;
 }
 
 export interface ApiKeySettings {
   openaiApiKey: string;
   anthropicApiKey: string;
   geminiApiKey: string;
+  groqApiKey: string;
+  mistralApiKey: string;
+  customTranscriptionApiKey: string;
+  customReasoningApiKey: string;
 }
 
-export function useSettings() {
-  const [useLocalWhisper, setUseLocalWhisper] = useLocalStorage(
-    "useLocalWhisper",
-    false,
-    {
-      serialize: String,
-      deserialize: (value) => value === "true",
-    }
-  );
+export interface PrivacySettings {
+  cloudBackupEnabled: boolean;
+  telemetryEnabled: boolean;
+}
 
-  const [whisperModel, setWhisperModel] = useLocalStorage(
-    "whisperModel",
-    "base",
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
+export interface ThemeSettings {
+  theme: "light" | "dark" | "auto";
+}
 
-  const [allowOpenAIFallback, setAllowOpenAIFallback] = useLocalStorage(
-    "allowOpenAIFallback",
-    false,
-    {
-      serialize: String,
-      deserialize: (value) => value === "true",
-    }
-  );
+function useSettingsInternal() {
+  const store = useSettingsStore();
 
-  const [allowLocalFallback, setAllowLocalFallback] = useLocalStorage(
-    "allowLocalFallback",
-    false,
-    {
-      serialize: String,
-      deserialize: (value) => value === "true",
-    }
-  );
+  // One-time initialization: sync API keys, dictation key, activation mode,
+  // UI language, and dictionary from the main process / SQLite.
+  const hasInitialized = useRef(false);
+  useEffect(() => {
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+    initializeSettings().catch((err) => {
+      logger.warn(
+        "Failed to initialize settings store",
+        { error: (err as Error).message },
+        "settings"
+      );
+    });
+  }, []);
 
-  const [fallbackWhisperModel, setFallbackWhisperModel] = useLocalStorage(
-    "fallbackWhisperModel",
-    "base",
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
+  // Listen for dictionary updates from main process (auto-learn corrections)
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.electronAPI?.onDictionaryUpdated) return;
+    const unsubscribe = window.electronAPI.onDictionaryUpdated((words: string[]) => {
+      if (Array.isArray(words)) {
+        store.setCustomDictionary(words);
+      }
+    });
+    return unsubscribe;
+  }, [store.setCustomDictionary]);
 
-  const [preferredLanguage, setPreferredLanguage] = useLocalStorage(
-    "preferredLanguage",
-    "en",
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
-
-  const [cloudTranscriptionBaseUrl, setCloudTranscriptionBaseUrl] = useLocalStorage(
-    "cloudTranscriptionBaseUrl",
-    API_ENDPOINTS.TRANSCRIPTION_BASE,
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
-
-  const [cloudReasoningBaseUrl, setCloudReasoningBaseUrl] = useLocalStorage(
-    "cloudReasoningBaseUrl",
-    API_ENDPOINTS.OPENAI_BASE,
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
-
-  // Reasoning settings
-  const [useReasoningModel, setUseReasoningModel] = useLocalStorage(
-    "useReasoningModel",
+  // Auto-learn corrections from user edits in external apps
+  const [autoLearnCorrections, setAutoLearnCorrectionsRaw] = useLocalStorage(
+    "autoLearnCorrections",
     true,
     {
       serialize: String,
-      deserialize: (value) => value !== "false", // Default true
+      deserialize: (value: string) => value !== "false",
     }
   );
 
-  const [reasoningModel, setReasoningModel] = useLocalStorage(
-    "reasoningModel",
-    "gpt-4o-mini",
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
-
-  // API keys
-  const [openaiApiKey, setOpenaiApiKey] = useLocalStorage("openaiApiKey", "", {
-    serialize: String,
-    deserialize: String,
-  });
-
-  const [anthropicApiKey, setAnthropicApiKey] = useLocalStorage(
-    "anthropicApiKey",
-    "",
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
-
-  const [geminiApiKey, setGeminiApiKey] = useLocalStorage(
-    "geminiApiKey",
-    "",
-    {
-      serialize: String,
-      deserialize: String,
-    }
-  );
-
-  // Hotkey
-  const [dictationKey, setDictationKey] = useLocalStorage("dictationKey", "", {
-    serialize: String,
-    deserialize: String,
-  });
-
-  // Computed values
-  const reasoningProvider = getModelProvider(reasoningModel);
-
-  // Batch operations
-  const updateTranscriptionSettings = useCallback(
-    (settings: Partial<TranscriptionSettings>) => {
-      if (settings.useLocalWhisper !== undefined)
-        setUseLocalWhisper(settings.useLocalWhisper);
-      if (settings.whisperModel !== undefined)
-        setWhisperModel(settings.whisperModel);
-      if (settings.allowOpenAIFallback !== undefined)
-        setAllowOpenAIFallback(settings.allowOpenAIFallback);
-      if (settings.allowLocalFallback !== undefined)
-        setAllowLocalFallback(settings.allowLocalFallback);
-      if (settings.fallbackWhisperModel !== undefined)
-        setFallbackWhisperModel(settings.fallbackWhisperModel);
-      if (settings.preferredLanguage !== undefined)
-        setPreferredLanguage(settings.preferredLanguage);
-      if (settings.cloudTranscriptionBaseUrl !== undefined)
-        setCloudTranscriptionBaseUrl(settings.cloudTranscriptionBaseUrl);
+  const setAutoLearnCorrections = useCallback(
+    (enabled: boolean) => {
+      setAutoLearnCorrectionsRaw(enabled);
+      window.electronAPI?.setAutoLearnEnabled?.(enabled);
     },
-    [
-      setUseLocalWhisper,
-      setWhisperModel,
-      setAllowOpenAIFallback,
-      setAllowLocalFallback,
-      setFallbackWhisperModel,
-      setPreferredLanguage,
-      setCloudTranscriptionBaseUrl,
-    ]
+    [setAutoLearnCorrectionsRaw]
   );
 
-  const updateReasoningSettings = useCallback(
-    (settings: Partial<ReasoningSettings>) => {
-      if (settings.useReasoningModel !== undefined)
-        setUseReasoningModel(settings.useReasoningModel);
-      if (settings.reasoningModel !== undefined)
-        setReasoningModel(settings.reasoningModel);
-      if (settings.cloudReasoningBaseUrl !== undefined)
-        setCloudReasoningBaseUrl(settings.cloudReasoningBaseUrl);
-      // reasoningProvider is computed from reasoningModel, not stored separately
-    },
-    [setUseReasoningModel, setReasoningModel, setCloudReasoningBaseUrl]
-  );
+  // Sync auto-learn state to main process on mount
+  useEffect(() => {
+    window.electronAPI?.setAutoLearnEnabled?.(autoLearnCorrections);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const updateApiKeys = useCallback(
-    (keys: Partial<ApiKeySettings>) => {
-      if (keys.openaiApiKey !== undefined) setOpenaiApiKey(keys.openaiApiKey);
-      if (keys.anthropicApiKey !== undefined)
-        setAnthropicApiKey(keys.anthropicApiKey);
-      if (keys.geminiApiKey !== undefined)
-        setGeminiApiKey(keys.geminiApiKey);
-    },
-    [setOpenaiApiKey, setAnthropicApiKey, setGeminiApiKey]
-  );
+  // Sync startup pre-warming preferences to main process
+  const {
+    useLocalWhisper,
+    localTranscriptionProvider,
+    whisperModel,
+    parakeetModel,
+    reasoningProvider,
+    reasoningModel,
+  } = store;
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.electronAPI?.syncStartupPreferences) return;
+
+    const model = localTranscriptionProvider === "nvidia" ? parakeetModel : whisperModel;
+    window.electronAPI
+      .syncStartupPreferences({
+        useLocalWhisper,
+        localTranscriptionProvider,
+        model: model || undefined,
+        reasoningProvider,
+        reasoningModel: reasoningProvider === "local" ? reasoningModel : undefined,
+      })
+      .catch((err) =>
+        logger.warn(
+          "Failed to sync startup preferences",
+          { error: (err as Error).message },
+          "settings"
+        )
+      );
+  }, [
+    useLocalWhisper,
+    localTranscriptionProvider,
+    whisperModel,
+    parakeetModel,
+    reasoningProvider,
+    reasoningModel,
+  ]);
 
   return {
-    useLocalWhisper,
-    whisperModel,
-    allowOpenAIFallback,
-    allowLocalFallback,
-    fallbackWhisperModel,
-    preferredLanguage,
-    cloudTranscriptionBaseUrl,
-    cloudReasoningBaseUrl,
-    useReasoningModel,
-    reasoningModel,
-    reasoningProvider,
-    openaiApiKey,
-    anthropicApiKey,
-    geminiApiKey,
-    dictationKey,
-    setUseLocalWhisper,
-    setWhisperModel,
-    setAllowOpenAIFallback,
-    setAllowLocalFallback,
-    setFallbackWhisperModel,
-    setPreferredLanguage,
-    setCloudTranscriptionBaseUrl,
-    setCloudReasoningBaseUrl,
-    setUseReasoningModel,
-    setReasoningModel,
-    setReasoningProvider: (provider: string) => {
-      if (provider === 'custom') {
-        return;
-      }
-
-      const providerModels = {
-        openai: "gpt-4o-mini", // Start with cost-efficient multimodal model
-        anthropic: "claude-3.5-sonnet-20241022",
-        gemini: "gemini-2.5-flash",
-        local: "llama-3.2-3b",
-      };
-      setReasoningModel(
-        providerModels[provider as keyof typeof providerModels] ||
-          "gpt-4o-mini"
-      );
-    },
-    setOpenaiApiKey,
-    setAnthropicApiKey,
-    setGeminiApiKey,
-    setDictationKey,
-    updateTranscriptionSettings,
-    updateReasoningSettings,
-    updateApiKeys,
+    useLocalWhisper: store.useLocalWhisper,
+    whisperModel: store.whisperModel,
+    uiLanguage: store.uiLanguage,
+    localTranscriptionProvider: store.localTranscriptionProvider,
+    parakeetModel: store.parakeetModel,
+    allowOpenAIFallback: store.allowOpenAIFallback,
+    allowLocalFallback: store.allowLocalFallback,
+    fallbackWhisperModel: store.fallbackWhisperModel,
+    preferredLanguage: store.preferredLanguage,
+    cloudTranscriptionProvider: store.cloudTranscriptionProvider,
+    cloudTranscriptionModel: store.cloudTranscriptionModel,
+    cloudTranscriptionBaseUrl: store.cloudTranscriptionBaseUrl,
+    cloudReasoningBaseUrl: store.cloudReasoningBaseUrl,
+    cloudTranscriptionMode: store.cloudTranscriptionMode,
+    cloudReasoningMode: store.cloudReasoningMode,
+    customDictionary: store.customDictionary,
+    assemblyAiStreaming: store.assemblyAiStreaming,
+    setAssemblyAiStreaming: store.setAssemblyAiStreaming,
+    useReasoningModel: store.useReasoningModel,
+    reasoningModel: store.reasoningModel,
+    reasoningProvider: store.reasoningProvider,
+    openaiApiKey: store.openaiApiKey,
+    anthropicApiKey: store.anthropicApiKey,
+    geminiApiKey: store.geminiApiKey,
+    groqApiKey: store.groqApiKey,
+    mistralApiKey: store.mistralApiKey,
+    dictationKey: store.dictationKey,
+    theme: store.theme,
+    setUseLocalWhisper: store.setUseLocalWhisper,
+    setWhisperModel: store.setWhisperModel,
+    setUiLanguage: store.setUiLanguage,
+    setLocalTranscriptionProvider: store.setLocalTranscriptionProvider,
+    setParakeetModel: store.setParakeetModel,
+    setAllowOpenAIFallback: store.setAllowOpenAIFallback,
+    setAllowLocalFallback: store.setAllowLocalFallback,
+    setFallbackWhisperModel: store.setFallbackWhisperModel,
+    setPreferredLanguage: store.setPreferredLanguage,
+    setCloudTranscriptionProvider: store.setCloudTranscriptionProvider,
+    setCloudTranscriptionModel: store.setCloudTranscriptionModel,
+    setCloudTranscriptionBaseUrl: store.setCloudTranscriptionBaseUrl,
+    setCloudReasoningBaseUrl: store.setCloudReasoningBaseUrl,
+    setCloudTranscriptionMode: store.setCloudTranscriptionMode,
+    setCloudReasoningMode: store.setCloudReasoningMode,
+    setCustomDictionary: store.setCustomDictionary,
+    setUseReasoningModel: store.setUseReasoningModel,
+    setReasoningModel: store.setReasoningModel,
+    setReasoningProvider: store.setReasoningProvider,
+    setOpenaiApiKey: store.setOpenaiApiKey,
+    setAnthropicApiKey: store.setAnthropicApiKey,
+    setGeminiApiKey: store.setGeminiApiKey,
+    setGroqApiKey: store.setGroqApiKey,
+    setMistralApiKey: store.setMistralApiKey,
+    customTranscriptionApiKey: store.customTranscriptionApiKey,
+    setCustomTranscriptionApiKey: store.setCustomTranscriptionApiKey,
+    customReasoningApiKey: store.customReasoningApiKey,
+    setCustomReasoningApiKey: store.setCustomReasoningApiKey,
+    setDictationKey: store.setDictationKey,
+    setTheme: store.setTheme,
+    activationMode: store.activationMode,
+    setActivationMode: store.setActivationMode,
+    audioCuesEnabled: store.audioCuesEnabled,
+    setAudioCuesEnabled: store.setAudioCuesEnabled,
+    floatingIconAutoHide: store.floatingIconAutoHide,
+    setFloatingIconAutoHide: store.setFloatingIconAutoHide,
+    preferBuiltInMic: store.preferBuiltInMic,
+    selectedMicDeviceId: store.selectedMicDeviceId,
+    setPreferBuiltInMic: store.setPreferBuiltInMic,
+    setSelectedMicDeviceId: store.setSelectedMicDeviceId,
+    autoLearnCorrections,
+    setAutoLearnCorrections,
+    cloudBackupEnabled: store.cloudBackupEnabled,
+    setCloudBackupEnabled: store.setCloudBackupEnabled,
+    telemetryEnabled: store.telemetryEnabled,
+    setTelemetryEnabled: store.setTelemetryEnabled,
+    updateTranscriptionSettings: store.updateTranscriptionSettings,
+    updateReasoningSettings: store.updateReasoningSettings,
+    updateApiKeys: store.updateApiKeys,
   };
+}
+
+export type SettingsValue = ReturnType<typeof useSettingsInternal>;
+
+const SettingsContext = createContext<SettingsValue | null>(null);
+
+export function SettingsProvider({ children }: { children: React.ReactNode }) {
+  const value = useSettingsInternal();
+  return React.createElement(SettingsContext.Provider, { value }, children);
+}
+
+export function useSettings(): SettingsValue {
+  const ctx = useContext(SettingsContext);
+  if (!ctx) {
+    throw new Error("useSettings must be used within a SettingsProvider");
+  }
+  return ctx;
 }

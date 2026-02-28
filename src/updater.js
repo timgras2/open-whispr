@@ -1,5 +1,4 @@
 const { autoUpdater } = require("electron-updater");
-const { ipcMain } = require("electron");
 
 class UpdateManager {
   constructor() {
@@ -10,12 +9,9 @@ class UpdateManager {
     this.lastUpdateInfo = null;
     this.isInstalling = false;
     this.isDownloading = false;
-    this.installTimeout = null;
-    this.ipcHandlers = [];
     this.eventListeners = [];
 
     this.setupAutoUpdater();
-    this.setupIPCHandlers();
   }
 
   setWindows(mainWindow, controlPanelWindow) {
@@ -33,10 +29,40 @@ class UpdateManager {
     // Configure auto-updater for GitHub releases
     autoUpdater.setFeedURL({
       provider: "github",
-      owner: "HeroTools",
-      repo: "open-whispr",
+      owner: "OpenWhispr",
+      repo: "openwhispr",
       private: false,
     });
+
+    // Use arch-specific update channel on macOS to prevent arm64/x64
+    // from downloading mismatched artifacts. Both builds publish to the
+    // same GitHub release, so without this they race on latest-mac.yml.
+    // Setting channel to e.g. 'latest-arm64' makes the updater look for
+    // 'latest-arm64-mac.yml' instead of the shared 'latest-mac.yml'.
+    if (process.platform === "darwin") {
+      let nativeArch = process.arch;
+
+      // Detect Rosetta: if an x64 build is running on Apple Silicon,
+      // sysctl.proc_translated returns "1". This self-heals users who
+      // got stuck on the x64 build from older releases.
+      if (process.arch === "x64") {
+        try {
+          const { execSync } = require("child_process");
+          const translated = execSync("sysctl -n sysctl.proc_translated", {
+            encoding: "utf8",
+            timeout: 3000,
+          }).trim();
+          if (translated === "1") {
+            console.log("🔄 Rosetta detected — switching update channel to arm64");
+            nativeArch = "arm64";
+          }
+        } catch {
+          // sysctl.proc_translated doesn't exist on real Intel Macs — ignore
+        }
+      }
+
+      autoUpdater.channel = nativeArch === "arm64" ? "latest-arm64" : "latest-x64";
+    }
 
     // Disable auto-download - let user control when to download
     autoUpdater.autoDownload = false;
@@ -77,13 +103,15 @@ class UpdateManager {
         this.lastUpdateInfo = null;
         this.notifyRenderers("update-not-available", info);
       },
-      "error": (err) => {
+      error: (err) => {
         console.error("❌ Auto-updater error:", err);
         this.isDownloading = false;
         this.notifyRenderers("update-error", err);
       },
       "download-progress": (progressObj) => {
-        console.log(`📥 Download progress: ${progressObj.percent.toFixed(2)}% (${(progressObj.transferred / 1024 / 1024).toFixed(2)}MB / ${(progressObj.total / 1024 / 1024).toFixed(2)}MB)`);
+        console.log(
+          `📥 Download progress: ${progressObj.percent.toFixed(2)}% (${(progressObj.transferred / 1024 / 1024).toFixed(2)}MB / ${(progressObj.total / 1024 / 1024).toFixed(2)}MB)`
+        );
         this.notifyRenderers("update-download-progress", progressObj);
       },
       "update-downloaded": (info) => {
@@ -99,7 +127,7 @@ class UpdateManager {
           };
         }
         this.notifyRenderers("update-downloaded", info);
-      }
+      },
     };
 
     // Register and track event listeners for cleanup
@@ -113,227 +141,183 @@ class UpdateManager {
     if (this.mainWindow && !this.mainWindow.isDestroyed() && this.mainWindow.webContents) {
       this.mainWindow.webContents.send(channel, data);
     }
-    if (this.controlPanelWindow && !this.controlPanelWindow.isDestroyed() && this.controlPanelWindow.webContents) {
+    if (
+      this.controlPanelWindow &&
+      !this.controlPanelWindow.isDestroyed() &&
+      this.controlPanelWindow.webContents
+    ) {
       this.controlPanelWindow.webContents.send(channel, data);
     }
   }
 
-  setupIPCHandlers() {
-    const handlers = [
-      {
-        channel: "check-for-updates",
-        handler: async () => {
-          try {
-            if (process.env.NODE_ENV === "development") {
-              return {
-                updateAvailable: false,
-                message: "Update checks are disabled in development mode",
-              };
-            }
-
-            console.log("🔍 Checking for updates...");
-            const result = await autoUpdater.checkForUpdates();
-
-            if (result && result.updateInfo) {
-              console.log("📋 Update available:", result.updateInfo.version);
-              console.log("📦 Download size:", result.updateInfo.files?.map(f => `${(f.size / 1024 / 1024).toFixed(2)}MB`).join(", "));
-              return {
-                updateAvailable: true,
-                version: result.updateInfo.version,
-                releaseDate: result.updateInfo.releaseDate,
-                files: result.updateInfo.files,
-                releaseNotes: result.updateInfo.releaseNotes,
-              };
-            } else {
-              console.log("✅ Already on latest version");
-              return {
-                updateAvailable: false,
-                message: "You are running the latest version",
-              };
-            }
-          } catch (error) {
-            console.error("❌ Update check error:", error);
-            throw error;
-          }
-        }
-      },
-      {
-        channel: "download-update",
-        handler: async () => {
-          try {
-            if (process.env.NODE_ENV === "development") {
-              return {
-                success: false,
-                message: "Update downloads are disabled in development mode",
-              };
-            }
-
-            if (this.isDownloading) {
-              return {
-                success: false,
-                message: "Download already in progress",
-              };
-            }
-
-            if (this.updateDownloaded) {
-              return {
-                success: false,
-                message: "Update already downloaded. Ready to install.",
-              };
-            }
-
-            this.isDownloading = true;
-            console.log("📥 Starting update download...");
-            await autoUpdater.downloadUpdate();
-            console.log("📥 Download initiated successfully");
-
-            return { success: true, message: "Update download started" };
-          } catch (error) {
-            this.isDownloading = false;
-            console.error("❌ Update download error:", error);
-            throw error;
-          }
-        }
-      },
-      {
-        channel: "install-update",
-        handler: async () => {
-          try {
-            if (process.env.NODE_ENV === "development") {
-              return {
-                success: false,
-                message: "Update installation is disabled in development mode",
-              };
-            }
-
-            if (!this.updateDownloaded) {
-              return {
-                success: false,
-                message: "No update available to install",
-              };
-            }
-
-            if (this.isInstalling) {
-              return {
-                success: false,
-                message: "Update installation already in progress",
-              };
-            }
-
-            this.isInstalling = true;
-            console.log("🔄 Installing update and restarting...");
-
-            this.installTimeout = setTimeout(() => {
-              console.log("🔄 Calling quitAndInstall(false, true)...");
-              console.log("📊 Platform:", process.platform);
-              console.log("📊 Update downloaded:", this.updateDownloaded);
-
-              // CRITICAL: Emit before-quit BEFORE quitAndInstall closes windows
-              // This sets isQuitting=true in windowManager, allowing windows to close
-              const { app } = require("electron");
-              app.emit("before-quit");
-
-              // Now quitAndInstall will:
-              // 1. Close all windows (now allowed because isQuitting = true)
-              // 2. Emit 'before-quit' event again (harmless)
-              // 3. Call app.quit()
-              // 4. Install update and restart (if isForceRunAfter = true)
-              autoUpdater.quitAndInstall(false, true);
-
-              console.log("✅ quitAndInstall() called - app should be quitting...");
-            }, 100);
-
-            return { success: true, message: "Update installation started" };
-          } catch (error) {
-            this.isInstalling = false;
-            if (this.installTimeout) {
-              clearTimeout(this.installTimeout);
-              this.installTimeout = null;
-            }
-            console.error("❌ Update installation error:", error);
-            throw error;
-          }
-        }
-      },
-      {
-        channel: "get-app-version",
-        handler: async () => {
-          try {
-            const { app } = require("electron");
-            return { version: app.getVersion() };
-          } catch (error) {
-            console.error("❌ Error getting app version:", error);
-            throw error;
-          }
-        }
-      },
-      {
-        channel: "get-update-status",
-        handler: async () => {
-          try {
-            return {
-              updateAvailable: this.updateAvailable,
-              updateDownloaded: this.updateDownloaded,
-              isDevelopment: process.env.NODE_ENV === "development",
-            };
-          } catch (error) {
-            console.error("❌ Error getting update status:", error);
-            throw error;
-          }
-        }
-      },
-      {
-        channel: "get-update-info",
-        handler: async () => {
-          try {
-            return this.lastUpdateInfo;
-          } catch (error) {
-            console.error("❌ Error getting update info:", error);
-            throw error;
-          }
-        }
+  async checkForUpdates() {
+    try {
+      if (process.env.NODE_ENV === "development") {
+        return {
+          updateAvailable: false,
+          message: "Update checks are disabled in development mode",
+        };
       }
-    ];
 
-    // Register all handlers and track for cleanup
-    handlers.forEach(({ channel, handler }) => {
-      ipcMain.handle(channel, handler);
-      this.ipcHandlers.push({ channel, handler });
-    });
+      console.log("🔍 Checking for updates...");
+      const result = await autoUpdater.checkForUpdates();
+
+      if (result?.isUpdateAvailable && result?.updateInfo) {
+        console.log("📋 Update available:", result.updateInfo.version);
+        console.log(
+          "📦 Download size:",
+          result.updateInfo.files?.map((f) => `${(f.size / 1024 / 1024).toFixed(2)}MB`).join(", ")
+        );
+        return {
+          updateAvailable: true,
+          version: result.updateInfo.version,
+          releaseDate: result.updateInfo.releaseDate,
+          files: result.updateInfo.files,
+          releaseNotes: result.updateInfo.releaseNotes,
+        };
+      } else {
+        console.log("✅ Already on latest version");
+        return {
+          updateAvailable: false,
+          message: "You are running the latest version",
+        };
+      }
+    } catch (error) {
+      console.error("❌ Update check error:", error);
+      throw error;
+    }
   }
 
-  // Method to check for updates on startup
+  async downloadUpdate() {
+    try {
+      if (process.env.NODE_ENV === "development") {
+        return {
+          success: false,
+          message: "Update downloads are disabled in development mode",
+        };
+      }
+
+      if (this.isDownloading) {
+        return {
+          success: true,
+          message: "Download already in progress",
+        };
+      }
+
+      if (this.updateDownloaded) {
+        return {
+          success: true,
+          message: "Update already downloaded. Ready to install.",
+        };
+      }
+
+      this.isDownloading = true;
+      console.log("📥 Starting update download...");
+      await autoUpdater.downloadUpdate();
+      console.log("📥 Download initiated successfully");
+
+      return { success: true, message: "Update download started" };
+    } catch (error) {
+      this.isDownloading = false;
+      console.error("❌ Update download error:", error);
+      throw error;
+    }
+  }
+
+  async installUpdate() {
+    try {
+      if (process.env.NODE_ENV === "development") {
+        return {
+          success: false,
+          message: "Update installation is disabled in development mode",
+        };
+      }
+
+      if (!this.updateDownloaded) {
+        return {
+          success: false,
+          message: "No update available to install",
+        };
+      }
+
+      if (this.isInstalling) {
+        return {
+          success: false,
+          message: "Update installation already in progress",
+        };
+      }
+
+      this.isInstalling = true;
+      console.log("🔄 Installing update and restarting...");
+
+      const { app, BrowserWindow } = require("electron");
+
+      // Remove listeners that prevent windows from closing
+      // so quitAndInstall can shut down cleanly
+      app.removeAllListeners("window-all-closed");
+      BrowserWindow.getAllWindows().forEach((win) => {
+        win.removeAllListeners("close");
+      });
+
+      const isSilent = process.platform === "win32";
+      autoUpdater.quitAndInstall(isSilent, true);
+
+      return { success: true, message: "Update installation started" };
+    } catch (error) {
+      this.isInstalling = false;
+      console.error("❌ Update installation error:", error);
+      throw error;
+    }
+  }
+
+  async getAppVersion() {
+    try {
+      const { app } = require("electron");
+      return { version: app.getVersion() };
+    } catch (error) {
+      console.error("❌ Error getting app version:", error);
+      throw error;
+    }
+  }
+
+  async getUpdateStatus() {
+    try {
+      return {
+        updateAvailable: this.updateAvailable,
+        updateDownloaded: this.updateDownloaded,
+        isDevelopment: process.env.NODE_ENV === "development",
+      };
+    } catch (error) {
+      console.error("❌ Error getting update status:", error);
+      throw error;
+    }
+  }
+
+  async getUpdateInfo() {
+    try {
+      return this.lastUpdateInfo;
+    } catch (error) {
+      console.error("❌ Error getting update info:", error);
+      throw error;
+    }
+  }
+
   checkForUpdatesOnStartup() {
     if (process.env.NODE_ENV !== "development") {
-      // Wait a bit for the app to fully initialize
       setTimeout(() => {
         console.log("🔄 Checking for updates on startup...");
-        autoUpdater.checkForUpdates().catch(err => {
+        autoUpdater.checkForUpdates().catch((err) => {
           console.error("Startup update check failed:", err);
         });
-      }, 3000); // Reduced from 5s to 3s for better UX
+      }, 3000);
     }
   }
 
-  // Cleanup method to be called on app quit
   cleanup() {
-    // Clear timeout
-    if (this.installTimeout) {
-      clearTimeout(this.installTimeout);
-      this.installTimeout = null;
-    }
-
-    // Remove event listeners
     this.eventListeners.forEach(({ event, handler }) => {
       autoUpdater.removeListener(event, handler);
     });
     this.eventListeners = [];
-
-    // Remove IPC handlers
-    this.ipcHandlers.forEach(({ channel }) => {
-      ipcMain.removeHandler(channel);
-    });
-    this.ipcHandlers = [];
   }
 }
 

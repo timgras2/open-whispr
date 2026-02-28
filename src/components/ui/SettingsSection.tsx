@@ -14,11 +14,11 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
   className = "",
 }) => {
   return (
-    <div className={`space-y-4 ${className}`}>
+    <div className={`space-y-3 ${className}`}>
       <div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
+        <h3 className="text-xs font-semibold text-foreground tracking-tight">{title}</h3>
         {description && (
-          <p className="text-sm text-gray-600 mb-4">{description}</p>
+          <p className="text-xs text-muted-foreground/80 mt-0.5 leading-relaxed">{description}</p>
         )}
       </div>
       {children}
@@ -39,16 +39,42 @@ export const SettingsGroup: React.FC<SettingsGroupProps> = ({
   variant = "default",
   className = "",
 }) => {
-  const baseClasses = "space-y-4 p-4 rounded-xl border";
+  const baseClasses = "space-y-3 p-3 rounded-lg border";
   const variantClasses = {
-    default: "bg-gray-50 border-gray-200",
-    highlighted: "bg-blue-50 border-blue-200",
+    default: "bg-card/50 dark:bg-surface-2/50 border-border/50 dark:border-border-subtle",
+    highlighted: "bg-primary/5 dark:bg-primary/10 border-primary/20 dark:border-primary/30",
   };
 
   return (
     <div className={`${baseClasses} ${variantClasses[variant]} ${className}`}>
-      {title && <h4 className="font-medium text-gray-900">{title}</h4>}
+      {title && <h4 className="text-xs font-medium text-foreground">{title}</h4>}
       {children}
+    </div>
+  );
+};
+
+interface SettingsRowProps {
+  label: string;
+  description?: string;
+  children: React.ReactNode;
+  className?: string;
+}
+
+export const SettingsRow: React.FC<SettingsRowProps> = ({
+  label,
+  description,
+  children,
+  className = "",
+}) => {
+  return (
+    <div className={`flex items-center justify-between gap-4 ${className}`}>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-foreground">{label}</p>
+        {description && (
+          <p className="text-xs text-muted-foreground/80 mt-0.5 leading-relaxed">{description}</p>
+        )}
+      </div>
+      <div className="shrink-0">{children}</div>
     </div>
   );
 };

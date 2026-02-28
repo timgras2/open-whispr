@@ -8,7 +8,7 @@ interface ModelWithStatus extends ModelDefinition {
   downloadProgress: number;
 }
 
-interface DownloadProgress {
+interface LLMDownloadProgressEvent {
   modelId: string;
   progress: number;
   downloadedSize: number;
@@ -19,7 +19,7 @@ export function useLocalModels() {
   const [models, setModels] = useState<ModelWithStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [progressMap, setProgressMap] = useState<Map<string, DownloadProgress>>(new Map());
+  const [progressMap, setProgressMap] = useState<Map<string, LLMDownloadProgressEvent>>(new Map());
 
   const loadModels = useCallback(async () => {
     try {
@@ -38,43 +38,49 @@ export function useLocalModels() {
   useEffect(() => {
     loadModels();
 
-    // Set up progress listener
-    const handleProgress = (_event: any, data: DownloadProgress) => {
-      setProgressMap(prev => new Map(prev).set(data.modelId, data));
+    const handleProgress = (_event: any, data: LLMDownloadProgressEvent) => {
+      setProgressMap((prev) => new Map(prev).set(data.modelId, data));
     };
 
-    const disposeProgress = window.electronAPI.onModelDownloadProgress(
-      handleProgress
-    );
+    const disposeProgress = window.electronAPI.onModelDownloadProgress(handleProgress);
 
     return () => {
       disposeProgress?.();
     };
   }, [loadModels]);
 
-  const downloadModel = useCallback(async (modelId: string) => {
-    try {
-      await window.electronAPI.modelDownload(modelId);
-      await loadModels();
-    } catch (err) {
-      setError(`Failed to download model: ${(err as Error).message}`);
-      throw err;
-    }
-  }, [loadModels]);
+  const downloadModel = useCallback(
+    async (modelId: string) => {
+      try {
+        await window.electronAPI.modelDownload(modelId);
+        await loadModels();
+      } catch (err) {
+        setError(`Failed to download model: ${(err as Error).message}`);
+        throw err;
+      }
+    },
+    [loadModels]
+  );
 
-  const deleteModel = useCallback(async (modelId: string) => {
-    try {
-      await window.electronAPI.modelDelete(modelId);
-      await loadModels();
-    } catch (err) {
-      setError(`Failed to delete model: ${(err as Error).message}`);
-      throw err;
-    }
-  }, [loadModels]);
+  const deleteModel = useCallback(
+    async (modelId: string) => {
+      try {
+        await window.electronAPI.modelDelete(modelId);
+        await loadModels();
+      } catch (err) {
+        setError(`Failed to delete model: ${(err as Error).message}`);
+        throw err;
+      }
+    },
+    [loadModels]
+  );
 
-  const getModelProgress = useCallback((modelId: string) => {
-    return progressMap.get(modelId);
-  }, [progressMap]);
+  const getModelProgress = useCallback(
+    (modelId: string) => {
+      return progressMap.get(modelId);
+    },
+    [progressMap]
+  );
 
   const checkRuntimeAvailable = useCallback(async () => {
     try {
@@ -85,14 +91,17 @@ export function useLocalModels() {
     }
   }, []);
 
-  const modelsByProvider = models.reduce((acc, model) => {
-    const providerId = model.id.split('-')[0] || 'other';
-    if (!acc[providerId]) {
-      acc[providerId] = [];
-    }
-    acc[providerId].push(model);
-    return acc;
-  }, {} as Record<string, ModelWithStatus[]>);
+  const modelsByProvider = models.reduce(
+    (acc, model) => {
+      const providerId = model.id.split("-")[0] || "other";
+      if (!acc[providerId]) {
+        acc[providerId] = [];
+      }
+      acc[providerId].push(model);
+      return acc;
+    },
+    {} as Record<string, ModelWithStatus[]>
+  );
 
   return {
     models,

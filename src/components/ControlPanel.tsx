@@ -1,34 +1,79 @@
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import React, { Suspense, useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./ui/button";
-import { Trash2, Settings, FileText, Mic, X } from "lucide-react";
-import SettingsModal from "./SettingsModal";
-import TitleBar from "./TitleBar";
-import SupportDropdown from "./ui/SupportDropdown";
-import TranscriptionItem from "./ui/TranscriptionItem";
+import { Download, RefreshCw, Loader2, AlertTriangle, Zap } from "lucide-react";
+import UpgradePrompt from "./UpgradePrompt";
 import { ConfirmDialog, AlertDialog } from "./ui/dialog";
 import { useDialogs } from "../hooks/useDialogs";
 import { useHotkey } from "../hooks/useHotkey";
 import { useToast } from "./ui/Toast";
+import { useUpdater } from "../hooks/useUpdater";
+import { useSettings } from "../hooks/useSettings";
+import { useAuth } from "../hooks/useAuth";
+import { useUsage } from "../hooks/useUsage";
 import {
   useTranscriptions,
   initializeTranscriptions,
   removeTranscription as removeFromStore,
-  clearTranscriptions as clearStoreTranscriptions,
 } from "../stores/transcriptionStore";
+import ControlPanelSidebar, { type ControlPanelView } from "./ControlPanelSidebar";
+import WindowControls from "./WindowControls";
+import { getCachedPlatform } from "../utils/platform";
+import { setActiveNoteId, setActiveFolderId } from "../stores/noteStore";
+import HistoryView from "./HistoryView";
+
+const platform = getCachedPlatform();
+
+const SettingsModal = React.lazy(() => import("./SettingsModal"));
+const ReferralModal = React.lazy(() => import("./ReferralModal"));
+const PersonalNotesView = React.lazy(() => import("./notes/PersonalNotesView"));
+const DictionaryView = React.lazy(() => import("./DictionaryView"));
+const UploadAudioView = React.lazy(() => import("./notes/UploadAudioView"));
 
 export default function ControlPanel() {
+  const { t } = useTranslation();
   const history = useTranscriptions();
   const [isLoading, setIsLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
+  const [limitData, setLimitData] = useState<{ wordsUsed: number; limit: number } | null>(null);
+  const hasShownUpgradePrompt = useRef(false);
+  const [settingsSection, setSettingsSection] = useState<string | undefined>();
+  const [aiCTADismissed, setAiCTADismissed] = useState(
+    () => localStorage.getItem("aiCTADismissed") === "true"
+  );
+  const [showReferrals, setShowReferrals] = useState(false);
+  const [showCloudMigrationBanner, setShowCloudMigrationBanner] = useState(false);
+  const [activeView, setActiveView] = useState<ControlPanelView>("home");
+  const [gpuAccelAvailable, setGpuAccelAvailable] = useState<{ cuda: boolean; vulkan: boolean }>({
+    cuda: false,
+    vulkan: false,
+  });
+  const [gpuBannerDismissed, setGpuBannerDismissed] = useState(
+    () => localStorage.getItem("gpuBannerDismissedUnified") === "true"
+  );
+  const cloudMigrationProcessed = useRef(false);
   const { hotkey } = useHotkey();
   const { toast } = useToast();
-  const [updateStatus, setUpdateStatus] = useState({
-    updateAvailable: false,
-    updateDownloaded: false,
-    isDevelopment: false,
-  });
-  const isWindows = typeof window !== "undefined" && window.electronAPI?.getPlatform?.() === "win32";
+  const {
+    useLocalWhisper,
+    localTranscriptionProvider,
+    useReasoningModel,
+    setUseLocalWhisper,
+    setCloudTranscriptionMode,
+  } = useSettings();
+  const { isSignedIn, isLoaded: authLoaded, user } = useAuth();
+  const usage = useUsage();
+
+  const {
+    status: updateStatus,
+    downloadProgress,
+    isDownloading,
+    isInstalling,
+    downloadUpdate,
+    installUpdate,
+    error: updateError,
+  } = useUpdater();
 
   const {
     confirmDialog,
@@ -39,49 +84,100 @@ export default function ControlPanel() {
     hideAlertDialog,
   } = useDialogs();
 
-  const handleClose = () => {
-    void window.electronAPI.windowClose();
-  };
-
   useEffect(() => {
     loadTranscriptions();
-
-    // Initialize update status
-    const initializeUpdateStatus = async () => {
-      try {
-        const status = await window.electronAPI.getUpdateStatus();
-        setUpdateStatus(status);
-      } catch (error) {
-        // Update status not critical for app function
-      }
-    };
-
-    initializeUpdateStatus();
-
-    // Set up update event listeners
-    const handleUpdateAvailable = (_event: any, _info: any) => {
-      setUpdateStatus((prev) => ({ ...prev, updateAvailable: true }));
-    };
-
-    const handleUpdateDownloaded = (_event: any, _info: any) => {
-      setUpdateStatus((prev) => ({ ...prev, updateDownloaded: true }));
-    };
-
-    const handleUpdateError = (_event: any, _error: any) => {
-      // Update errors are handled by the update service
-    };
-
-    const disposers = [
-      window.electronAPI.onUpdateAvailable(handleUpdateAvailable),
-      window.electronAPI.onUpdateDownloaded(handleUpdateDownloaded),
-      window.electronAPI.onUpdateError(handleUpdateError),
-    ];
-
-    // Cleanup listeners on unmount
-    return () => {
-      disposers.forEach((dispose) => dispose?.());
-    };
   }, []);
+
+  useEffect(() => {
+    if (updateStatus.updateDownloaded && !isDownloading) {
+      toast({
+        title: t("controlPanel.update.readyTitle"),
+        description: t("controlPanel.update.readyDescription"),
+        variant: "success",
+      });
+    }
+  }, [updateStatus.updateDownloaded, isDownloading, toast, t]);
+
+  useEffect(() => {
+    if (updateError) {
+      toast({
+        title: t("controlPanel.update.problemTitle"),
+        description: t("controlPanel.update.problemDescription"),
+        variant: "destructive",
+      });
+    }
+  }, [updateError, toast, t]);
+
+  useEffect(() => {
+    const dispose = window.electronAPI?.onLimitReached?.(
+      (data: { wordsUsed: number; limit: number }) => {
+        if (!hasShownUpgradePrompt.current) {
+          hasShownUpgradePrompt.current = true;
+          setLimitData(data);
+          setShowUpgradePrompt(true);
+        } else {
+          toast({
+            title: t("controlPanel.limit.weeklyTitle"),
+            description: t("controlPanel.limit.weeklyDescription"),
+            duration: 5000,
+          });
+        }
+      }
+    );
+
+    return () => {
+      dispose?.();
+    };
+  }, [toast, t]);
+
+  useEffect(() => {
+    if (!usage?.isPastDue || !usage.hasLoaded) return;
+    if (sessionStorage.getItem("pastDueNotified")) return;
+    sessionStorage.setItem("pastDueNotified", "true");
+    toast({
+      title: t("controlPanel.billing.pastDueTitle"),
+      description: t("controlPanel.billing.pastDueDescription"),
+      variant: "destructive",
+      duration: 8000,
+    });
+  }, [usage?.isPastDue, usage?.hasLoaded, toast, t]);
+
+  useEffect(() => {
+    if (!authLoaded || !isSignedIn || cloudMigrationProcessed.current) return;
+    const isPending = localStorage.getItem("pendingCloudMigration") === "true";
+    const alreadyShown = localStorage.getItem("cloudMigrationShown") === "true";
+    if (!isPending || alreadyShown) return;
+
+    cloudMigrationProcessed.current = true;
+    setUseLocalWhisper(false);
+    setCloudTranscriptionMode("openwhispr");
+    localStorage.removeItem("pendingCloudMigration");
+    setShowCloudMigrationBanner(true);
+  }, [authLoaded, isSignedIn, setUseLocalWhisper, setCloudTranscriptionMode]);
+
+  useEffect(() => {
+    if (platform === "darwin" || gpuBannerDismissed) return;
+    const detect = async () => {
+      const results = { cuda: false, vulkan: false };
+      if (useLocalWhisper && localTranscriptionProvider === "whisper") {
+        try {
+          const status = await window.electronAPI?.getCudaWhisperStatus?.();
+          if (status?.gpuInfo.hasNvidiaGpu && !status.downloaded) results.cuda = true;
+        } catch {}
+      }
+      if (useReasoningModel) {
+        try {
+          const [gpu, vulkan] = await Promise.all([
+            window.electronAPI?.detectVulkanGpu?.(),
+            window.electronAPI?.getLlamaVulkanStatus?.(),
+          ]);
+          if (gpu?.available && !vulkan?.downloaded) results.vulkan = true;
+        } catch {}
+      }
+      setGpuAccelAvailable(results);
+    };
+    detect();
+  }, [useLocalWhisper, localTranscriptionProvider, useReasoningModel, gpuBannerDismissed]);
 
   const loadTranscriptions = async () => {
     try {
@@ -89,86 +185,132 @@ export default function ControlPanel() {
       await initializeTranscriptions();
     } catch (error) {
       showAlertDialog({
-        title: "Unable to load history",
-        description: "Please try again in a moment.",
+        title: t("controlPanel.history.couldNotLoadTitle"),
+        description: t("controlPanel.history.couldNotLoadDescription"),
       });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const copyToClipboard = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast({
-        title: "Copied!",
-        description: "Text copied to your clipboard",
-        variant: "success",
-        duration: 2000,
-      });
-    } catch (err) {
-      toast({
-        title: "Copy Failed",
-        description: "Failed to copy text to clipboard",
+  const copyToClipboard = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast({
+          title: t("controlPanel.history.copiedTitle"),
+          description: t("controlPanel.history.copiedDescription"),
+          variant: "success",
+          duration: 2000,
+        });
+      } catch (err) {
+        toast({
+          title: t("controlPanel.history.couldNotCopyTitle"),
+          description: t("controlPanel.history.couldNotCopyDescription"),
+          variant: "destructive",
+        });
+      }
+    },
+    [toast, t]
+  );
+
+  const deleteTranscription = useCallback(
+    async (id: number) => {
+      showConfirmDialog({
+        title: t("controlPanel.history.deleteTitle"),
+        description: t("controlPanel.history.deleteDescription"),
+        onConfirm: async () => {
+          try {
+            const result = await window.electronAPI.deleteTranscription(id);
+            if (result.success) {
+              removeFromStore(id);
+            } else {
+              showAlertDialog({
+                title: t("controlPanel.history.couldNotDeleteTitle"),
+                description: t("controlPanel.history.couldNotDeleteDescription"),
+              });
+            }
+          } catch {
+            showAlertDialog({
+              title: t("controlPanel.history.couldNotDeleteTitle"),
+              description: t("controlPanel.history.couldNotDeleteDescriptionGeneric"),
+            });
+          }
+        },
         variant: "destructive",
       });
+    },
+    [showConfirmDialog, showAlertDialog, t]
+  );
+
+  const handleUpdateClick = async () => {
+    if (updateStatus.updateDownloaded) {
+      showConfirmDialog({
+        title: t("controlPanel.update.installTitle"),
+        description: t("controlPanel.update.installDescription"),
+        onConfirm: async () => {
+          try {
+            await installUpdate();
+          } catch (error) {
+            toast({
+              title: t("controlPanel.update.couldNotInstallTitle"),
+              description: t("controlPanel.update.couldNotInstallDescription"),
+              variant: "destructive",
+            });
+          }
+        },
+      });
+    } else if (updateStatus.updateAvailable && !isDownloading) {
+      try {
+        await downloadUpdate();
+      } catch (error) {
+        toast({
+          title: t("controlPanel.update.couldNotDownloadTitle"),
+          description: t("controlPanel.update.couldNotDownloadDescription"),
+          variant: "destructive",
+        });
+      }
     }
   };
 
-  const clearHistory = async () => {
-    showConfirmDialog({
-      title: "Clear History",
-      description:
-        "Are you certain you wish to clear all inscribed records? This action cannot be undone.",
-      onConfirm: async () => {
-        try {
-          const result = await window.electronAPI.clearTranscriptions();
-          clearStoreTranscriptions();
-          showAlertDialog({
-            title: "History Cleared",
-            description: `Successfully cleared ${result.cleared} transcriptions from your chronicles.`,
-          });
-        } catch (error) {
-          showAlertDialog({
-            title: "Error",
-            description: "Failed to clear history. Please try again.",
-          });
-        }
-      },
-      variant: "destructive",
-    });
-  };
-
-  const deleteTranscription = async (id: number) => {
-    showConfirmDialog({
-      title: "Delete Transcription",
-      description:
-        "Are you certain you wish to remove this inscription from your records?",
-      onConfirm: async () => {
-        try {
-          const result = await window.electronAPI.deleteTranscription(id);
-          if (result.success) {
-            removeFromStore(id);
-          } else {
-            showAlertDialog({
-              title: "Delete Failed",
-              description:
-                "Failed to delete transcription. It may have already been removed.",
-            });
-          }
-        } catch (error) {
-          showAlertDialog({
-            title: "Delete Failed",
-            description: "Failed to delete transcription. Please try again.",
-          });
-        }
-      },
-      variant: "destructive",
-    });
+  const getUpdateButtonContent = () => {
+    if (isInstalling) {
+      return (
+        <>
+          <Loader2 size={14} className="animate-spin" />
+          <span>{t("controlPanel.update.installing")}</span>
+        </>
+      );
+    }
+    if (isDownloading) {
+      return (
+        <>
+          <Loader2 size={14} className="animate-spin" />
+          <span>{Math.round(downloadProgress)}%</span>
+        </>
+      );
+    }
+    if (updateStatus.updateDownloaded) {
+      return (
+        <>
+          <RefreshCw size={14} />
+          <span>{t("controlPanel.update.installButton")}</span>
+        </>
+      );
+    }
+    if (updateStatus.updateAvailable) {
+      return (
+        <>
+          <Download size={14} />
+          <span>{t("controlPanel.update.availableButton")}</span>
+        </>
+      );
+    }
+    return null;
   };
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="h-screen bg-background flex flex-col">
       <ConfirmDialog
         open={confirmDialog.open}
         onOpenChange={hideConfirmDialog}
@@ -186,130 +328,211 @@ export default function ControlPanel() {
         onOk={() => {}}
       />
 
-      <TitleBar
-        actions={
-          <>
-            {/* Update notification badge */}
-            {!updateStatus.isDevelopment &&
-              (updateStatus.updateAvailable ||
-                updateStatus.updateDownloaded) && (
-                <div className="relative">
-                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full"></div>
-                </div>
-              )}
-            <SupportDropdown />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowSettings(!showSettings)}
-            >
-              <Settings size={16} />
-            </Button>
-            {isWindows && (
-              <div className="flex items-center gap-1 ml-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                  onClick={handleClose}
-                  aria-label="Close window"
-                >
-                  <X size={14} />
-                </Button>
-              </div>
-            )}
-          </>
-        }
+      <UpgradePrompt
+        open={showUpgradePrompt}
+        onOpenChange={setShowUpgradePrompt}
+        wordsUsed={limitData?.wordsUsed}
+        limit={limitData?.limit}
       />
 
-      <SettingsModal open={showSettings} onOpenChange={setShowSettings} />
+      {showSettings && (
+        <Suspense fallback={null}>
+          <SettingsModal
+            open={showSettings}
+            onOpenChange={(open) => {
+              setShowSettings(open);
+              if (!open) setSettingsSection(undefined);
+            }}
+            initialSection={settingsSection}
+          />
+        </Suspense>
+      )}
 
-      {/* Main content */}
-      <div className="p-6">
-        <div className="space-y-6 max-w-4xl mx-auto">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <FileText size={18} className="text-indigo-600" />
-                  Recent Transcriptions
-                </CardTitle>
-                <div className="flex gap-2">
-                  {history.length > 0 && (
-                    <Button
-                      onClick={clearHistory}
-                      variant="ghost"
-                      size="icon"
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                    >
-                      <Trash2 size={16} />
-                    </Button>
-                  )}
+      {showReferrals && (
+        <Suspense fallback={null}>
+          <ReferralModal open={showReferrals} onOpenChange={setShowReferrals} />
+        </Suspense>
+      )}
+
+      <div className="flex flex-1 overflow-hidden">
+        <ControlPanelSidebar
+          activeView={activeView}
+          onViewChange={setActiveView}
+          onOpenSettings={() => {
+            setSettingsSection(undefined);
+            setShowSettings(true);
+          }}
+          onOpenReferrals={() => setShowReferrals(true)}
+          onUpgrade={() => {
+            setSettingsSection("plansBilling");
+            setShowSettings(true);
+          }}
+          onUpgradeCheckout={() => usage?.openCheckout()}
+          isOverLimit={usage?.isOverLimit ?? false}
+          userName={user?.name}
+          userEmail={user?.email}
+          userImage={user?.image}
+          isSignedIn={isSignedIn}
+          authLoaded={authLoaded}
+          isProUser={!!(usage?.isSubscribed || usage?.isTrial)}
+          usageLoaded={usage?.hasLoaded ?? false}
+          updateAction={
+            !updateStatus.isDevelopment &&
+            (updateStatus.updateAvailable ||
+              updateStatus.updateDownloaded ||
+              isDownloading ||
+              isInstalling) ? (
+              <Button
+                variant={updateStatus.updateDownloaded ? "default" : "outline"}
+                size="sm"
+                onClick={handleUpdateClick}
+                disabled={isInstalling || isDownloading}
+                className="gap-1.5 text-xs w-full h-7"
+              >
+                {getUpdateButtonContent()}
+              </Button>
+            ) : undefined
+          }
+        />
+        <main className="flex-1 flex flex-col overflow-hidden">
+          <div
+            className="flex items-center justify-end w-full h-10 shrink-0"
+            style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+          >
+            {platform !== "darwin" && (
+              <div className="pr-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+                <WindowControls />
+              </div>
+            )}
+          </div>
+          <div className="flex-1 overflow-y-auto pt-1">
+            {usage?.isPastDue && activeView === "home" && (
+              <div className="max-w-3xl mx-auto w-full mb-3">
+                <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="shrink-0 w-8 h-8 rounded-md bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center">
+                      <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-amber-900 dark:text-amber-200 mb-0.5">
+                        {t("controlPanel.billing.pastDueTitle")}
+                      </p>
+                      <p className="text-xs text-amber-700 dark:text-amber-300/80 mb-2">
+                        {t("controlPanel.billing.bannerDescription", {
+                          limit: usage.limit.toLocaleString(),
+                        })}
+                      </p>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          setSettingsSection("account");
+                          setShowSettings(true);
+                        }}
+                      >
+                        {t("controlPanel.billing.updatePayment")}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <div className="text-center py-8">
-                  <div className="w-8 h-8 mx-auto mb-3 bg-indigo-600 rounded-lg flex items-center justify-center">
-                    <span className="text-white text-sm">📝</span>
+            )}
+            {(gpuAccelAvailable.cuda || gpuAccelAvailable.vulkan) &&
+              activeView === "home" &&
+              !gpuBannerDismissed && (
+                <div className="max-w-3xl mx-auto w-full mb-3">
+                  <div className="rounded-lg border border-primary/20 dark:border-primary/15 bg-primary/5 p-3">
+                    <div className="flex items-start gap-3">
+                      <div className="shrink-0 w-8 h-8 rounded-md bg-primary/10 dark:bg-primary/15 flex items-center justify-center">
+                        <Zap size={16} className="text-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium text-foreground mb-0.5">
+                          {t("controlPanel.gpu.bannerTitle")}
+                        </p>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          {t("controlPanel.gpu.bannerDescription")}
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <Button
+                            variant="default"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => {
+                              setSettingsSection(
+                                gpuAccelAvailable.cuda ? "transcription" : "intelligence"
+                              );
+                              setShowSettings(true);
+                            }}
+                          >
+                            {t("controlPanel.gpu.enableButton")}
+                          </Button>
+                          <button
+                            onClick={() => {
+                              setGpuBannerDismissed(true);
+                              localStorage.setItem("gpuBannerDismissedUnified", "true");
+                            }}
+                            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            {t("controlPanel.gpu.dismissButton")}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-neutral-600">Loading transcriptions...</p>
-                </div>
-              ) : history.length === 0 ? (
-                <div className="text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 bg-neutral-100 rounded-full flex items-center justify-center">
-                    <Mic className="w-8 h-8 text-neutral-400" />
-                  </div>
-                  <h3 className="text-lg font-medium text-neutral-900 mb-2">
-                    No transcriptions yet
-                  </h3>
-                  <p className="text-neutral-600 mb-4 max-w-sm mx-auto">
-                    Press your hotkey to start recording and create your first
-                    transcription.
-                  </p>
-                  <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-4 max-w-md mx-auto">
-                    <h4 className="font-medium text-neutral-800 mb-2">
-                      Quick Start:
-                    </h4>
-                    <ol className="text-sm text-neutral-600 text-left space-y-1">
-                      <li>1. Click in any text field</li>
-                      <li>
-                        2. Press{" "}
-                        <kbd className="bg-white px-2 py-1 rounded text-xs font-mono border border-neutral-300">
-                          {hotkey}
-                        </kbd>{" "}
-                        to start recording
-                      </li>
-                      <li>3. Speak your text</li>
-                      <li>
-                        4. Press{" "}
-                        <kbd className="bg-white px-2 py-1 rounded text-xs font-mono border border-neutral-300">
-                          {hotkey}
-                        </kbd>{" "}
-                        again to stop
-                      </li>
-                      <li>5. Your text will appear automatically!</li>
-                    </ol>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-3 max-h-80 overflow-y-auto">
-                  {history.map((item, index) => (
-                    <TranscriptionItem
-                      key={item.id}
-                      item={item}
-                      index={index}
-                      total={history.length}
-                      onCopy={copyToClipboard}
-                      onDelete={deleteTranscription}
-                    />
-                  ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
+            {activeView === "home" && (
+              <HistoryView
+                history={history}
+                isLoading={isLoading}
+                hotkey={hotkey}
+                showCloudMigrationBanner={showCloudMigrationBanner}
+                setShowCloudMigrationBanner={setShowCloudMigrationBanner}
+                aiCTADismissed={aiCTADismissed}
+                setAiCTADismissed={setAiCTADismissed}
+                useReasoningModel={useReasoningModel}
+                copyToClipboard={copyToClipboard}
+                deleteTranscription={deleteTranscription}
+                onOpenSettings={(section) => {
+                  setSettingsSection(section);
+                  setShowSettings(true);
+                }}
+              />
+            )}
+            {activeView === "personal-notes" && (
+              <Suspense fallback={null}>
+                <PersonalNotesView
+                  onOpenSettings={(section) => {
+                    setSettingsSection(section);
+                    setShowSettings(true);
+                  }}
+                />
+              </Suspense>
+            )}
+            {activeView === "dictionary" && (
+              <Suspense fallback={null}>
+                <DictionaryView />
+              </Suspense>
+            )}
+            {activeView === "upload" && (
+              <Suspense fallback={null}>
+                <UploadAudioView
+                  onNoteCreated={(noteId, folderId) => {
+                    setActiveNoteId(noteId);
+                    if (folderId) setActiveFolderId(folderId);
+                    setActiveView("personal-notes");
+                  }}
+                  onOpenSettings={(section) => {
+                    setSettingsSection(section);
+                    setShowSettings(true);
+                  }}
+                />
+              </Suspense>
+            )}
+          </div>
+        </main>
       </div>
     </div>
   );

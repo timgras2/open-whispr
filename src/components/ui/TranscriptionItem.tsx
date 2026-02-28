@@ -1,88 +1,68 @@
-import React from "react";
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./button";
 import { Copy, Trash2 } from "lucide-react";
 import type { TranscriptionItem as TranscriptionItemType } from "../../types/electron";
+import { cn } from "../lib/utils";
 
 interface TranscriptionItemProps {
   item: TranscriptionItemType;
-  index: number;
-  total: number;
   onCopy: (text: string) => void;
   onDelete: (id: number) => void;
 }
 
-export default function TranscriptionItem({
-  item,
-  index,
-  total,
-  onCopy,
-  onDelete,
-}: TranscriptionItemProps) {
-  const timestampSource = item.timestamp.endsWith("Z")
-    ? item.timestamp
-    : `${item.timestamp}Z`;
+export default function TranscriptionItem({ item, onCopy, onDelete }: TranscriptionItemProps) {
+  const { i18n } = useTranslation();
+  const [isHovered, setIsHovered] = useState(false);
+
+  const timestampSource = item.timestamp.endsWith("Z") ? item.timestamp : `${item.timestamp}Z`;
   const timestampDate = new Date(timestampSource);
-  const formattedTimestamp = Number.isNaN(timestampDate.getTime())
-    ? item.timestamp
-    : timestampDate.toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
+  const formattedTime = Number.isNaN(timestampDate.getTime())
+    ? ""
+    : timestampDate.toLocaleTimeString(i18n.language, {
         hour: "2-digit",
         minute: "2-digit",
       });
 
   return (
-    <div className="relative bg-gradient-to-b from-blue-50/30 to-white rounded-xl shadow-sm hover:shadow-md transition-shadow">
-      <div className="p-6 pl-16" style={{ paddingTop: "8px" }}>
-        <div className="flex items-start justify-between">
-          <div className="flex-1 mr-3">
-            <div
-              className="flex items-center gap-2 mb-1"
-              style={{ marginTop: "2px", lineHeight: "24px" }}
-            >
-              <span className="text-indigo-600 text-xs font-medium">
-                #{total - index}
-              </span>
-              <div className="w-px h-3 bg-neutral-300" />
-              <span className="text-xs text-neutral-500">
-                {formattedTimestamp}
-              </span>
-            </div>
-            <p
-              className="text-neutral-800 text-sm"
-              style={{
-                fontFamily:
-                  'Noto Sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-                lineHeight: "24px",
-                textAlign: "left",
-                marginTop: "2px",
-                paddingBottom: "2px",
-              }}
-            >
-              {item.text}
-            </p>
-          </div>
-          <div
-            className="flex gap-1 flex-shrink-0"
-            style={{ marginTop: "2px" }}
+    <div
+      className="group rounded-md border border-border/40 dark:border-border-subtle/60 bg-card/50 dark:bg-surface-2/60 px-3 py-2.5 transition-colors duration-150 hover:bg-muted/30 dark:hover:bg-surface-2/80"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <div className="flex items-start gap-3">
+        {formattedTime && (
+          <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums pt-0.5">
+            {formattedTime}
+          </span>
+        )}
+
+        <p className="flex-1 min-w-0 text-foreground text-sm leading-[1.5] break-words">
+          {item.text}
+        </p>
+
+        <div
+          className={cn(
+            "flex items-center gap-0.5 shrink-0 transition-opacity duration-150",
+            isHovered ? "opacity-100" : "opacity-0"
+          )}
+        >
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => onCopy(item.text)}
+            className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-foreground/10"
           >
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={() => onCopy(item.text)}
-              className="h-7 w-7"
-            >
-              <Copy size={12} />
-            </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={() => onDelete(item.id)}
-              className="h-7 w-7 text-red-600 hover:text-red-700 hover:bg-red-50"
-            >
-              <Trash2 size={12} />
-            </Button>
-          </div>
+            <Copy size={12} />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => onDelete(item.id)}
+            className="h-6 w-6 rounded-sm text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+          >
+            <Trash2 size={12} />
+          </Button>
         </div>
       </div>
     </div>

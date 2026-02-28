@@ -1,11 +1,12 @@
 const { Menu } = require("electron");
+const { i18nMain } = require("./i18nMain");
 
 class MenuManager {
   static setupMainMenu() {
     if (process.platform === "darwin") {
       const template = [
         {
-          label: "OpenWhispr",
+          label: i18nMain.t("menu.appLabel"),
           submenu: [
             { role: "about" },
             { type: "separator" },
@@ -15,7 +16,7 @@ class MenuManager {
             { role: "hideOthers" },
             { role: "unhide" },
             { type: "separator" },
-            { role: "quit", label: "Quit OpenWhispr" },
+            { role: "quit", label: i18nMain.t("menu.quit") },
           ],
         },
       ];
@@ -29,7 +30,7 @@ class MenuManager {
       // On macOS, create a proper application menu
       const template = [
         {
-          label: "OpenWhispr",
+          label: i18nMain.t("menu.appLabel"),
           submenu: [
             { role: "about" },
             { type: "separator" },
@@ -39,7 +40,7 @@ class MenuManager {
             { role: "hideOthers" },
             { role: "unhide" },
             { type: "separator" },
-            { role: "quit", label: "Quit OpenWhispr" },
+            { role: "quit", label: i18nMain.t("menu.quit") },
           ],
         },
         {
@@ -56,11 +57,8 @@ class MenuManager {
             { role: "selectAll" },
             { type: "separator" },
             {
-              label: "Speech",
-              submenu: [
-                { role: "startSpeaking" },
-                { role: "stopSpeaking" },
-              ],
+              label: i18nMain.t("menu.speech"),
+              submenu: [{ role: "startSpeaking" }, { role: "stopSpeaking" }],
             },
           ],
         },
@@ -90,27 +88,27 @@ class MenuManager {
           ],
         },
         {
-          label: "Help",
+          label: i18nMain.t("menu.help"),
           submenu: [
             {
-              label: "Learn More",
+              label: i18nMain.t("menu.learnMore"),
               click: async () => {
                 const { shell } = require("electron");
-                await shell.openExternal("https://github.com/HeroTools/open-whispr");
+                await shell.openExternal("https://github.com/OpenWhispr/openwhispr");
               },
             },
           ],
         },
       ];
-      
+
       const menu = Menu.buildFromTemplate(template);
       Menu.setApplicationMenu(menu);
     } else {
       // For Windows/Linux, keep the window-specific menu
       const template = [
         {
-          label: "File",
-          submenu: [{ role: "close", label: "Close Window" }],
+          label: i18nMain.t("menu.file"),
+          submenu: [{ role: "close", label: i18nMain.t("menu.closeWindow") }],
         },
         {
           label: "Edit",
@@ -140,7 +138,7 @@ class MenuManager {
           ],
         },
       ];
-      
+
       const menu = Menu.buildFromTemplate(template);
       controlPanelWindow.setMenu(menu);
     }

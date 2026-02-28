@@ -22,7 +22,7 @@ export class SecureCache<T> {
 
   get(key: string): T | undefined {
     const entry = this.cache.get(key);
-    
+
     if (!entry) {
       return undefined;
     }
@@ -33,6 +33,10 @@ export class SecureCache<T> {
     }
 
     return entry.value;
+  }
+
+  get size(): number {
+    return this.cache.size;
   }
 
   has(key: string): boolean {
@@ -47,7 +51,6 @@ export class SecureCache<T> {
     this.cache.clear();
   }
 
-  // Clean up expired entries
   cleanup(): void {
     const now = Date.now();
     const entries = Array.from(this.cache.entries());
@@ -58,7 +61,6 @@ export class SecureCache<T> {
     }
   }
 
-  // Auto cleanup on interval
   startAutoCleanup(intervalMs: number = 60000): () => void {
     const interval = setInterval(() => this.cleanup(), intervalMs);
     return () => clearInterval(interval);

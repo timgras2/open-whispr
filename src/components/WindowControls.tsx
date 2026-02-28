@@ -1,34 +1,23 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./ui/button";
 import { Minus, Square, X, Copy } from "lucide-react";
 
-/**
- * Window control buttons for Linux and Windows platforms
- * Provides minimize, maximize/restore, and close functionality
- * macOS uses native window controls so this component is not rendered there
- */
 export default function WindowControls() {
+  const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
-    // Sync maximized state with main process
     const syncIsMaximized = async () => {
       try {
         const maximized = await window.electronAPI?.windowIsMaximized?.();
-        if (mounted) {
-          setIsMaximized(!!maximized);
-        }
-      } catch {
-        // Silently handle if API not available
-      }
+        if (mounted) setIsMaximized(!!maximized);
+      } catch {}
     };
 
-    // Initial sync
     syncIsMaximized();
-
-    // Poll for changes (window can be maximized via double-click on title bar, etc.)
     const intervalId = setInterval(syncIsMaximized, 1000);
 
     return () => {
@@ -40,28 +29,21 @@ export default function WindowControls() {
   const handleMinimize = async () => {
     try {
       await window.electronAPI?.windowMinimize?.();
-    } catch {
-      // Silently handle if API not available
-    }
+    } catch {}
   };
 
   const handleMaximize = async () => {
     try {
       await window.electronAPI?.windowMaximize?.();
-      // Update state after toggle
       const maximized = await window.electronAPI?.windowIsMaximized?.();
       setIsMaximized(!!maximized);
-    } catch {
-      // Silently handle if API not available
-    }
+    } catch {}
   };
 
   const handleClose = async () => {
     try {
       await window.electronAPI?.windowClose?.();
-    } catch {
-      // Silently handle if API not available
-    }
+    } catch {}
   };
 
   return (
@@ -70,7 +52,7 @@ export default function WindowControls() {
         variant="ghost"
         size="icon"
         onClick={handleMinimize}
-        title="Minimize"
+        title={t("windowControls.minimize")}
         className="h-8 w-8"
       >
         <Minus size={14} />
@@ -79,7 +61,7 @@ export default function WindowControls() {
         variant="ghost"
         size="icon"
         onClick={handleMaximize}
-        title={isMaximized ? "Restore" : "Maximize"}
+        title={isMaximized ? t("windowControls.restore") : t("windowControls.maximize")}
         className="h-8 w-8"
       >
         {isMaximized ? <Copy size={14} /> : <Square size={12} />}
@@ -88,8 +70,8 @@ export default function WindowControls() {
         variant="ghost"
         size="icon"
         onClick={handleClose}
-        className="h-8 w-8 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
-        title="Close"
+        className="h-8 w-8 hover:text-destructive hover:bg-destructive/10"
+        title={t("windowControls.close")}
       >
         <X size={14} />
       </Button>

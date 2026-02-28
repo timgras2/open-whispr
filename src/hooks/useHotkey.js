@@ -1,15 +1,9 @@
-import { useState, useEffect } from "react";
+import { useSettingsStore } from "../stores/settingsStore";
+import { getDefaultHotkey } from "../utils/hotkeys";
 
 export const useHotkey = () => {
-  const [hotkey, setHotkey] = useState("`");
-
-  useEffect(() => {
-    // Load hotkey from localStorage on mount
-    const savedHotkey = localStorage.getItem("dictationKey");
-    if (savedHotkey) {
-      setHotkey(savedHotkey);
-    }
-  }, []);
+  const hotkey = useSettingsStore((s) => s.dictationKey) || getDefaultHotkey();
+  const setHotkey = useSettingsStore((s) => s.setDictationKey);
 
   return {
     hotkey,

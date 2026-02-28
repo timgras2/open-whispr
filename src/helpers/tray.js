@@ -1,6 +1,8 @@
 const { Tray, Menu, nativeImage, app } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const debugLogger = require("./debugLogger");
+const { i18nMain } = require("./i18nMain");
 
 class TrayManager {
   constructor() {
@@ -37,7 +39,6 @@ class TrayManager {
     this.createControlPanelCallback = callback;
   }
 
-
   attachControlPanelListeners(window) {
     if (!window || this.attachedControlPanels.has(window)) {
       return;
@@ -46,9 +47,6 @@ class TrayManager {
     this.attachedControlPanels.add(window);
 
     window.on("show", () => {
-      if (process.platform === "win32") {
-        window.setSkipTaskbar(false);
-      }
       this.updateTrayMenu?.();
     });
 
@@ -65,22 +63,25 @@ class TrayManager {
   async showControlPanelFromTray() {
     try {
       if (this.windowManager) {
-        this.controlPanelWindow =
-          this.windowManager.controlPanelWindow || this.controlPanelWindow;
+        this.controlPanelWindow = this.windowManager.controlPanelWindow || this.controlPanelWindow;
       }
       this.attachControlPanelListeners(this.controlPanelWindow);
 
-      if (
-        this.controlPanelWindow &&
-        !this.controlPanelWindow.isDestroyed()
-      ) {
-        if (process.platform === "win32") {
-          this.controlPanelWindow.setSkipTaskbar(false);
+      if (this.controlPanelWindow && !this.controlPanelWindow.isDestroyed()) {
+        // Show dock icon on macOS when control panel opens
+        if (process.platform === "darwin" && app.dock) {
+          app.dock.show();
+        }
+        if (this.controlPanelWindow.isMinimized()) {
+          this.controlPanelWindow.restore();
         }
         if (!this.controlPanelWindow.isVisible()) {
           this.controlPanelWindow.show();
         }
         this.controlPanelWindow.focus();
+        if (this.controlPanelWindow.webContents.isCrashed()) {
+          this.controlPanelWindow.webContents.reload();
+        }
         return;
       }
 
@@ -92,32 +93,24 @@ class TrayManager {
         }
         this.attachControlPanelListeners(this.controlPanelWindow);
 
-        if (
-          this.controlPanelWindow &&
-          !this.controlPanelWindow.isDestroyed()
-        ) {
-          if (process.platform === "win32") {
-            this.controlPanelWindow.setSkipTaskbar(false);
-          }
+        if (this.controlPanelWindow && !this.controlPanelWindow.isDestroyed()) {
           this.controlPanelWindow.show();
           this.controlPanelWindow.focus();
         }
         return;
       }
 
-      console.error("No control panel callback available");
+      debugLogger.error("No control panel callback available", undefined, "tray");
     } catch (error) {
-      console.error("Failed to open control panel:", error);
+      debugLogger.error("Failed to open control panel", { error: error?.message }, "tray");
     }
   }
 
   async createTray() {
-    if (process.platform !== "darwin" && process.platform !== "win32") return;
-
     try {
       const trayIcon = await this.loadTrayIcon();
       if (!trayIcon || trayIcon.isEmpty()) {
-        console.error("Failed to load tray icon");
+        debugLogger.error("Failed to load tray icon", undefined, "tray");
         return;
       }
 
@@ -130,7 +123,7 @@ class TrayManager {
       this.updateTrayMenu();
       this.setupTrayEventHandlers();
     } catch (error) {
-      console.error("Error creating tray icon:", error.message);
+      debugLogger.error("Error creating tray icon", { error: error.message }, "tray");
     }
   }
 
@@ -142,9 +135,7 @@ class TrayManager {
 
     if (platform === "darwin") {
       if (isDevelopment) {
-        candidatePaths.push(
-          path.join(__dirname, "..", "assets", "iconTemplate@3x.png")
-        );
+        candidatePaths.push(path.join(__dirname, "..", "assets", "iconTemplate@3x.png"));
       } else {
         candidatePaths.push(
           path.join(process.resourcesPath, "src", "assets", "iconTemplate@3x.png"),
@@ -171,13 +162,7 @@ class TrayManager {
         candidatePaths.push(
           path.join(process.resourcesPath, "src", "assets", fileName),
           path.join(process.resourcesPath, "assets", fileName),
-          path.join(
-            process.resourcesPath,
-            "app.asar.unpacked",
-            "src",
-            "assets",
-            fileName
-          ),
+          path.join(process.resourcesPath, "app.asar.unpacked", "src", "assets", fileName),
           path.join(__dirname, "..", "..", "src", "assets", fileName),
           path.join(app.getAppPath(), "src", "assets", fileName)
         );
@@ -192,16 +177,20 @@ class TrayManager {
             if (platform === "darwin") {
               icon.setTemplateImage(true);
             }
-            console.log("Using tray icon:", testPath);
+            debugLogger.debug("Using tray icon", { path: testPath }, "tray");
             return icon;
           }
         }
       } catch (error) {
-        console.error("Error checking tray icon path:", testPath, error.message);
+        debugLogger.error(
+          "Error checking tray icon path",
+          { path: testPath, error: error.message },
+          "tray"
+        );
       }
     }
 
-    console.error("Could not find tray icon in any expected location");
+    debugLogger.error("Could not find tray icon in any expected location", undefined, "tray");
     return this.createFallbackIcon();
   }
 
@@ -219,22 +208,21 @@ class TrayManager {
 
       const buffer = canvas.toBuffer("image/png");
       const fallbackIcon = nativeImage.createFromBuffer(buffer);
-      console.log("✅ Created fallback tray icon");
+      debugLogger.info("Created fallback tray icon", undefined, "tray");
       return fallbackIcon;
     } catch (fallbackError) {
-      console.warn("Canvas not available, creating minimal fallback icon");
+      debugLogger.warn("Canvas not available, creating minimal fallback icon", undefined, "tray");
       // Create a minimal 16x16 black square PNG as fallback
       const pngData = Buffer.from([
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10,
-        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x91, 0x68, 0x36, 0x00, 0x00, 0x00,
-        0x0c, 0x49, 0x44, 0x41, 0x54, 0x28, 0x53, 0x63, 0x08, 0x05, 0x00, 0x00,
-        0x02, 0x00, 0x01, 0xe5, 0x27, 0xde, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x91, 0x68, 0x36, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x28, 0x53, 0x63, 0x08,
+        0x05, 0x00, 0x00, 0x02, 0x00, 0x01, 0xe5, 0x27, 0xde, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x49,
         0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
       ]);
 
       const fallbackIcon = nativeImage.createFromBuffer(pngData);
-      console.log("✅ Created minimal fallback tray icon");
+      debugLogger.info("Created minimal fallback tray icon", undefined, "tray");
       return fallbackIcon;
     }
   }
@@ -244,7 +232,9 @@ class TrayManager {
 
     return [
       {
-        label: dictationVisible ? "Hide Dictation Panel" : "Show Dictation Panel",
+        label: dictationVisible
+          ? i18nMain.t("tray.toggleDictation.hide")
+          : i18nMain.t("tray.toggleDictation.show"),
         click: () => {
           if (!this.windowManager) return;
           if (this.windowManager.isDictationPanelVisible()) {
@@ -256,16 +246,16 @@ class TrayManager {
         },
       },
       {
-        label: "Open Control Panel",
+        label: i18nMain.t("tray.openControlPanel"),
         click: async () => {
           await this.showControlPanelFromTray();
         },
       },
       { type: "separator" },
       {
-        label: "Quit OpenWhispr",
+        label: i18nMain.t("tray.quit"),
         click: () => {
-          console.log("Quitting app via tray menu");
+          debugLogger.info("Quitting app via tray menu", undefined, "tray");
           app.quit();
         },
       },
@@ -276,7 +266,7 @@ class TrayManager {
     if (!this.tray) return;
 
     const contextMenu = Menu.buildFromTemplate(this.buildContextMenuTemplate());
-    this.tray.setToolTip("OpenWhispr - Voice Dictation");
+    this.tray.setToolTip(i18nMain.t("tray.tooltip"));
     this.tray.setContextMenu(contextMenu);
   }
 
@@ -285,21 +275,14 @@ class TrayManager {
       return;
     }
 
-    if (process.platform === "win32") {
+    if (process.platform !== "darwin") {
       this.tray.on("click", () => {
         void this.showControlPanelFromTray();
-      });
-      this.tray.on("right-click", () => {
-        this.tray?.popUpContextMenu();
-      });
-    } else {
-      this.tray.on("click", () => {
-        this.tray?.popUpContextMenu();
       });
     }
 
     this.tray.on("destroyed", () => {
-      console.log("Tray icon destroyed");
+      debugLogger.debug("Tray icon destroyed", undefined, "tray");
       this.tray = null;
     });
   }
